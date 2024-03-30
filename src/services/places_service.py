@@ -11,7 +11,7 @@ from integrations.events.producer import EventProducer
 from integrations.events.schemas import CountryCityDTO
 from models import Place
 from repositories.places_repository import PlacesRepository
-from schemas.places import PlaceUpdate
+from schemas.places import PlaceBase
 from settings import settings
 
 logging.config.fileConfig("logging.conf")
@@ -90,7 +90,7 @@ class PlacesService:
 
         return primary_key
 
-    async def update_place(self, primary_key: int, place: PlaceUpdate) -> Optional[int]:
+    async def update_place(self, primary_key: int, place: PlaceBase) -> Optional[int]:
         """
         Обновление объекта любимого места по переданным данным.
 
@@ -99,8 +99,17 @@ class PlacesService:
         :return:
         """
 
+        place = Place(latitude=place.latitude,
+                      longitude=place.longitude,
+                      description=place.description,
+                      )
+
         # при изменении координат – обогащение данных путем получения дополнительной информации от API
-        # todo
+        if location := await LocationClient().get_location(latitude=place.latitude,
+                                                           longitude=place.longitude):
+            place.country = location.alpha2code
+            place.city = location.city
+            place.locality = location.locality
 
         matched_rows = await self.places_repository.update_model(
             primary_key, **place.dict(exclude_unset=True)
@@ -109,7 +118,11 @@ class PlacesService:
 
         # публикация события для попытки импорта информации
         # по обновленному объекту любимого места в сервисе Countries Informer
-        # todo
+        try:
+            place_data = CountryCityDTO(city=place.city,alpha2code=place.country,)
+            EventProducer().publish(queue_name=settings.rabbitmq.queue.places_import, body=place_data.json())
+        except ValidationError:
+            logger.warning("The message was not well-formed during publishing event.", exc_info=True,)
 
         return matched_rows
 
